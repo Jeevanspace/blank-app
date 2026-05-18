@@ -1600,7 +1600,7 @@ with tabs[6]:
 # Groq  (FREE) : https://console.groq.com  → API Keys
 # Anthropic    : https://console.anthropic.com → API Keys (has free tier)
 # The app tries Groq first; if it is network-blocked it falls back to Anthropic.
-GROQ_API_KEY      = "YOUR_GROQ_API_KEY_HERE"       # ← free from console.groq.com
+GROQ_API_KEY      = "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"       # ← free from console.groq.com
 GROQ_MODEL        = "llama3-70b-8192"
 ANTHROPIC_API_KEY = "YOUR_ANTHROPIC_API_KEY_HERE"  # ← fallback key
 ANTHROPIC_MODEL   = "claude-haiku-4-5-20251001"
