@@ -1,1 +1,22 @@
-streamlit
+# AGNISIGHT — Requirements
+# Intelligent Flight Anomaly Detection & Post-Flight Analysis System
+# Agnikul Cosmos | Agnibaan ST | Agnilet SN-07
+#
+# Install all dependencies with:
+#   pip install -r requirements.txt
+#
+# Python 3.9 or higher recommended (tested on 3.10, 3.11, 3.12)
+# ─────────────────────────────────────────────────────────────────
+
+# Web dashboard framework
+streamlit>=1.32.0
+
+# Numerical computing & data processing
+numpy>=1.26.0
+pandas>=2.1.0
+
+# Machine learning — Isolation Forest + StandardScaler + PCA
+scikit-learn>=1.4.0
+
+# Interactive charts and visualisations
+plotly>=5.19.0
