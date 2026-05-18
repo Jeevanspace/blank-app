@@ -1511,11 +1511,28 @@ with tabs[5]:
         st.plotly_chart(fig_nzl, use_container_width=True)
 
     st.markdown('<div class="section-title" style="margin-top:6px;">Agnilet SN-07 — Full Firing Log</div>', unsafe_allow_html=True)
+    def _health_color(val):
+        """Color health_score cells without requiring matplotlib."""
+        try:
+            v = float(val)
+        except (TypeError, ValueError):
+            return ""
+        if v >= 90:
+            bg, fg = "#dcfce7", "#166534"   # green
+        elif v >= 80:
+            bg, fg = "#fef9c3", "#854d0e"   # yellow
+        else:
+            bg, fg = "#fee2e2", "#991b1b"   # red
+        return f"background-color:{bg};color:{fg};font-weight:600"
+
     st.dataframe(
         eh.style.format({
-            "peak_Pc_bar": "{:.2f}", "avg_thrust_kN": "{:.2f}",
-            "health_score": "{:.1f}", "turbo_peak_rpm": "{:.0f}", "nozzle_peak_C": "{:.0f}",
-        }).background_gradient(subset=["health_score"], cmap="RdYlGn", vmin=70, vmax=100),
+            "peak_Pc_bar":    "{:.2f}",
+            "avg_thrust_kN":  "{:.2f}",
+            "health_score":   "{:.1f}",
+            "turbo_peak_rpm": "{:.0f}",
+            "nozzle_peak_C":  "{:.0f}",
+        }).map(_health_color, subset=["health_score"]),
         use_container_width=True, height=280,
     )
 
@@ -1579,9 +1596,14 @@ with tabs[6]:
 #  TAB 8 — NL QUERY  (Groq LLaMA3 powered — free tier)
 # ══════════════════════════════════════════════════════════════════
 
-# ── Groq API key (free) — fill in your key below ────────────────
-GROQ_API_KEY = "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"   # ← paste your free Groq API key here
-GROQ_MODEL   = "llama3-70b-8192"              # free, fast Groq model
+# ── LLM API keys — fill in at least ONE ─────────────────────────
+# Groq  (FREE) : https://console.groq.com  → API Keys
+# Anthropic    : https://console.anthropic.com → API Keys (has free tier)
+# The app tries Groq first; if it is network-blocked it falls back to Anthropic.
+GROQ_API_KEY      = "YOUR_GROQ_API_KEY_HERE"       # ← free from console.groq.com
+GROQ_MODEL        = "llama3-70b-8192"
+ANTHROPIC_API_KEY = "YOUR_ANTHROPIC_API_KEY_HERE"  # ← fallback key
+ANTHROPIC_MODEL   = "claude-haiku-4-5-20251001"
 
 
 def build_telemetry_context(df, pwr, anomalies, eng_hist, mode, mission_id, n_anom):
@@ -1681,15 +1703,8 @@ def build_telemetry_context(df, pwr, anomalies, eng_hist, mode, mission_id, n_an
     return "\n".join(lines)
 
 
-def query_groq(user_question: str, telemetry_context: str, api_key: str) -> str:
-    """
-    Send the user question + full telemetry context to Groq (free tier)
-    and return the answer. Uses api.groq.com/openai/v1/chat/completions.
-    Get a free API key at: https://console.groq.com
-    """
-    import urllib.request, json as _json
-
-    system_prompt = (
+def _build_system_prompt():
+    return (
         "You are AGNISIGHT-AI, an expert aerospace telemetry analyst for Agnikul Cosmos. "
         "You are given a complete snapshot of a rocket flight's telemetry data including "
         "propulsion, GNC, avionics, Isolation Forest anomaly detection results, and engine health history. "
@@ -1699,49 +1714,112 @@ def query_groq(user_question: str, telemetry_context: str, api_key: str) -> str:
         "Format your answer in plain readable paragraphs — no markdown headers, no bullet symbols."
     )
 
+
+def _call_groq(user_question: str, telemetry_context: str) -> str:
+    """Call Groq API (free tier). Raises exception if network blocked or key invalid."""
+    import urllib.request, json as _json
     payload = _json.dumps({
         "model": GROQ_MODEL,
         "messages": [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": _build_system_prompt()},
             {"role": "user",   "content": f"TELEMETRY DATA:\n{telemetry_context}\n\nENGINEER QUESTION: {user_question}"},
         ],
         "temperature": 0.3,
         "max_tokens": 1024,
     }).encode("utf-8")
-
     req = urllib.request.Request(
         "https://api.groq.com/openai/v1/chat/completions",
         data=payload,
-        headers={
-            "Content-Type":  "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {GROQ_API_KEY}"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=15) as resp:
         result = _json.loads(resp.read().decode("utf-8"))
     return result["choices"][0]["message"]["content"].strip()
 
 
+def _call_anthropic(user_question: str, telemetry_context: str) -> str:
+    """Call Anthropic API as fallback. Raises exception if key invalid."""
+    import urllib.request, json as _json
+    payload = _json.dumps({
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 1024,
+        "system": _build_system_prompt(),
+        "messages": [{"role": "user",
+                      "content": f"TELEMETRY DATA:\n{telemetry_context}\n\nENGINEER QUESTION: {user_question}"}],
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=payload,
+        headers={"Content-Type": "application/json",
+                 "x-api-key": ANTHROPIC_API_KEY,
+                 "anthropic-version": "2023-06-01"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        result = _json.loads(resp.read().decode("utf-8"))
+    return result["content"][0]["text"].strip()
+
+
+def query_llm(user_question: str, telemetry_context: str) -> tuple[str, str]:
+    """
+    Smart dual-backend LLM query.
+    Tries Groq first (free, fast). If Groq is network-blocked (403) or key missing,
+    automatically falls back to Anthropic API.
+    Returns (answer_text, backend_used).
+    """
+    groq_key_set  = GROQ_API_KEY      and GROQ_API_KEY      != "YOUR_GROQ_API_KEY_HERE"
+    anth_key_set  = ANTHROPIC_API_KEY and ANTHROPIC_API_KEY != "YOUR_ANTHROPIC_API_KEY_HERE"
+
+    if groq_key_set:
+        try:
+            return _call_groq(user_question, telemetry_context), "Groq · llama3-70b-8192"
+        except Exception as e:
+            err = str(e)
+            # 403 = network blocked, fall through to Anthropic
+            # 401 = bad key, raise immediately
+            if "401" in err or "invalid_api_key" in err.lower():
+                raise ValueError("Invalid Groq API key — check GROQ_API_KEY") from e
+            if "429" in err:
+                raise ValueError("Groq rate limit hit — wait a moment") from e
+            # 403 / timeout / connection error → fall back silently
+            if not anth_key_set:
+                raise ValueError(
+                    f"Groq is network-blocked (403) in this environment and no "
+                    f"ANTHROPIC_API_KEY is set as fallback. "
+                    f"Set ANTHROPIC_API_KEY or run the app on your local machine."
+                ) from e
+            # fall through to Anthropic
+    elif not anth_key_set:
+        raise ValueError("No API key set. Fill in GROQ_API_KEY or ANTHROPIC_API_KEY in the code.")
+
+    # Anthropic fallback
+    return _call_anthropic(user_question, telemetry_context), "Anthropic · claude-haiku"
+
+
 with tabs[7]:
-    st.markdown('<div class="section-title">Natural Language Telemetry Query — Powered by Groq LLaMA3 (Free)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Natural Language Telemetry Query — AI Powered (Groq / Anthropic)</div>', unsafe_allow_html=True)
     st.markdown("""<div style="font-size:12px;color:#64748b;margin-bottom:14px;line-height:1.9;">
 Ask any engineering question in plain English. AGNISIGHT feeds the full telemetry snapshot — propulsion,
-GNC, avionics, anomaly events, engine health — to Groq LLaMA3 and returns a data-grounded answer.<br>
+GNC, avionics, anomaly events, engine health — to an LLM and returns a data-grounded answer. Groq (free) is tried first; Anthropic is the automatic fallback.<br>
 <i>Examples: "What caused the pressure spike?" &nbsp;·&nbsp; "How was the turbopump?" &nbsp;·&nbsp; "Was the OF ratio stable?" &nbsp;·&nbsp; "What is engine remaining life?"</i>
 </div>""", unsafe_allow_html=True)
 
     # API key status indicator
-    key_ok = GROQ_API_KEY and GROQ_API_KEY != "YOUR_GROQ_API_KEY_HERE"
+    groq_set  = GROQ_API_KEY      and GROQ_API_KEY      != "YOUR_GROQ_API_KEY_HERE"
+    anth_set  = ANTHROPIC_API_KEY and ANTHROPIC_API_KEY != "YOUR_ANTHROPIC_API_KEY_HERE"
+    key_ok    = groq_set or anth_set
     if not key_ok:
         st.markdown("""<div style="background:#fef9c3;border:1px solid #fde047;border-left:3px solid #d97706;
             border-radius:4px;padding:10px 14px;font-size:12px;color:#92400e;font-family:'JetBrains Mono',monospace;margin-bottom:12px;">
-            ⚠ GROQ_API_KEY is not set. Paste your free Groq API key (console.groq.com) into the GROQ_API_KEY variable near the top of the NL Query section.
+            ⚠ No API key set. Add <b>GROQ_API_KEY</b> (free: console.groq.com) <i>or</i> <b>ANTHROPIC_API_KEY</b> (console.anthropic.com) in the code.
         </div>""", unsafe_allow_html=True)
     else:
+        active = ("Groq · " + GROQ_MODEL) if groq_set else ("Anthropic · " + ANTHROPIC_MODEL)
         st.markdown(f"""<div style="background:#f0fdf4;border:1px solid #86efac;border-left:3px solid #16a34a;
             border-radius:4px;padding:8px 14px;font-size:11px;color:#166534;font-family:'JetBrains Mono',monospace;margin-bottom:12px;">
-            ✔ Groq API connected &nbsp;·&nbsp; Model: {GROQ_MODEL} (free tier)
+            ✔ LLM backend ready &nbsp;·&nbsp; Primary: {active} &nbsp;·&nbsp; Auto-fallback enabled
         </div>""", unsafe_allow_html=True)
 
     # Preset question buttons
@@ -1773,32 +1851,34 @@ GNC, avionics, anomaly events, engine health — to Groq LLaMA3 and returns a da
 
     if st.button("▶  Ask AGNISIGHT-AI", key="nl_run_btn", use_container_width=False):
         if not key_ok:
-            st.error("Set your GROQ_API_KEY in the code before running a query.")
+            st.error("Set GROQ_API_KEY or ANTHROPIC_API_KEY in the code before running a query.")
         elif not query.strip():
             st.warning("Please enter a question.")
         else:
-            with st.spinner("Building telemetry context · querying Groq LLaMA3…"):
+            with st.spinner("Building telemetry context · querying AI backend…"):
                 try:
                     telem_ctx = build_telemetry_context(
                         df, pwr, anomalies, eng_hist, mode, mission_id, n_anom
                     )
-                    answer = query_groq(query.strip(), telem_ctx, GROQ_API_KEY)
+                    answer, backend_used = query_llm(query.strip(), telem_ctx)
+                    st.markdown(
+                        f'<div style="font-size:10px;color:#64748b;margin-bottom:4px;'
+                        f'font-family:JetBrains Mono,monospace;">answered by {backend_used}</div>',
+                        unsafe_allow_html=True,
+                    )
                     st.markdown(f'<div class="nl-answer">{answer}</div>', unsafe_allow_html=True)
 
-                    # Show what telemetry context was sent (collapsible)
                     with st.expander("📋 Telemetry context sent to LLM", expanded=False):
                         st.code(telem_ctx, language="text")
 
+                except ValueError as e:
+                    st.error(f"❌ {e}")
                 except Exception as e:
                     err_str = str(e)
-                    if "401" in err_str or "invalid_api_key" in err_str.lower():
-                        st.error("❌ Invalid Groq API key. Check your GROQ_API_KEY value.")
-                    elif "429" in err_str:
-                        st.error("❌ Groq rate limit hit. Wait a moment and try again.")
-                    elif "timed out" in err_str.lower():
+                    if "timed out" in err_str.lower():
                         st.error("❌ Request timed out. Check your network connection.")
                     else:
-                        st.error(f"❌ Groq API error: {err_str}")
+                        st.error(f"❌ LLM error: {err_str}")
 
 
 # ─────────────────────────────────────────────────────────────────
